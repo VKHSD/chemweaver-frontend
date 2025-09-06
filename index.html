@@ -6,22 +6,15 @@
   <title>ChemWeaver — SMILES to Gaussian</title>
   <script src="https://unpkg.com/3dmol/build/3Dmol-min.js"></script>
   <style>
-    :root{
-      --bg:#0f1115; --panel:#151922; --text:#e6e6e6; --muted:#9aa3b2;
-      --accent:#7aa2ff; --accent2:#55e9bc; --border:#232838;
-      --chip:#0e1526; --chip-br:#273355;
-    }
+    :root{ --bg:#0f1115; --panel:#151922; --text:#e6e6e6; --muted:#9aa3b2;
+           --accent:#7aa2ff; --accent2:#55e9bc; --border:#232838;
+           --chip:#0e1526; --chip-br:#273355; }
     html,body{height:100%;margin:0}
-    body{
-      background:var(--bg); color:var(--text);
-      font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";
-      display:grid; grid-template-rows:auto 1fr;
-    }
-    header{
-      display:flex; gap:12px; align-items:center;
-      padding:10px 14px; border-bottom:1px solid var(--border);
-      background:linear-gradient(180deg,#121521,#0f1115);
-    }
+    body{ background:var(--bg); color:var(--text);
+          font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";
+          display:grid; grid-template-rows:auto 1fr; }
+    header{ display:flex; gap:12px; align-items:center; padding:10px 14px;
+            border-bottom:1px solid var(--border); background:linear-gradient(180deg,#121521,#0f1115); }
     header h1{font-size:16px;margin:0}
     .muted{color:var(--muted);font-size:12px}
     .wrap{display:grid; grid-template-columns:380px 1fr 420px; height:calc(100vh - 56px)}
@@ -43,7 +36,8 @@
     details.card>summary{list-style:none; cursor:pointer; padding:10px 12px; color:#cfe0ff; display:flex; justify-content:space-between}
     details.card[open]>summary{border-bottom:1px solid var(--border)}
     details.card .content{padding:10px 12px; display:flex; flex-direction:column; gap:8px}
-    pre#gjf{white-space:pre; background:#0e111a; border:1px solid var(--border); border-radius:8px; padding:10px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; min-height:220px; overflow:auto}
+    pre#gjf{white-space:pre; background:#0e111a; border:1px solid var(--border); border-radius:8px; padding:10px;
+            font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; min-height:220px; overflow:auto}
     .status{position:absolute; left:10px; bottom:10px; background:rgba(20,24,35,.85); border:1px solid #2a3250; border-radius:10px; padding:8px 10px; font-size:12px; pointer-events:none}
     a{color:var(--accent2); text-decoration:none} a:hover{text-decoration:underline}
   </style>
@@ -51,7 +45,7 @@
 <body>
   <header>
     <h1>ChemWeaver</h1>
-    <div class="muted">One box: type a SMILES or a name/CAS/InChIKey.</div>
+    <div class="muted">One box: SMILES or name/CAS/InChIKey. We’ll resolve → 3D → Gaussian.</div>
     <span class="pill" id="count">No model</span>
   </header>
 
@@ -62,13 +56,13 @@
         <div class="content">
           <div class="row">
             <label style="min-width:70px">Query</label>
-            <input id="query" type="text" placeholder="e.g., C1=CC=CC=C1  or  aspirin  or  50-78-2  or  UHOVQNZJYSORNB-UHFFFAOYSA-N" />
+            <input id="query" type="text" placeholder="C1=CC=CC=C1  or  aspirin  or  50-78-2  or  UHOVQNZJYSORNB-UHFFFAOYSA-N" />
           </div>
           <div class="row">
             <button class="btn" id="btnPreview">Preview 3D</button>
             <button class="btn" id="btnClear">Clear</button>
           </div>
-          <div class="help">Client resolves via PubChem first (CORS ok), then falls back to backend. Backend builds 3D/Gaussian.</div>
+          <div class="help">If backend 3D fails, we fall back to PubChem 3D → direct SMILES.</div>
         </div>
       </details>
 
@@ -97,21 +91,6 @@
           <div class="help">Aromatic=1.5, double=2.0, triple=3.0 are preserved.</div>
         </div>
       </details>
-
-      <details class="card">
-        <summary>Style</summary>
-        <div class="content">
-          <div class="row">
-            <label>Sphere radius</label><input id="srad" type="range" min="0.1" max="0.7" step="0.01" value="0.35" />
-          </div>
-          <div class="row">
-            <label>Stick radius</label><input id="trad" type="range" min="0.05" max="0.3" step="0.01" value="0.12" />
-          </div>
-          <div class="row">
-            <label><input id="labels" type="checkbox" checked /> Show atom numbers</label>
-          </div>
-        </div>
-      </details>
     </div>
 
     <div class="viewer">
@@ -130,14 +109,11 @@
   </div>
 
 <script>
-/* ---------- config ---------- */
 const BACKEND = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
   ? 'http://127.0.0.1:5000'
   : 'https://chemweaver-backend-1.onrender.com';
 
-/* ---------- 3D viewer ---------- */
-let viewer, model, labels=[];
-let lastSMILES = "";
+let viewer, model, labels=[], lastSMILES="";
 
 function initViewer(){
   const el = document.getElementById('viewer');
@@ -149,22 +125,16 @@ function showStatus(msg, ms=3500){
   const s=document.getElementById('status');
   s.textContent = msg; s.hidden=false;
   clearTimeout(showStatus._t); showStatus._t=setTimeout(()=>s.hidden=true, ms);
+  console.log('[ChemWeaver]', msg);
 }
-
-/* ---------- labels & styles ---------- */
-function clearLabels(){
-  for(const l of labels||[]) viewer.removeLabel(l);
-  labels.length = 0;
-}
+function clearLabels(){ for(const l of labels||[]) viewer.removeLabel(l); labels.length=0; }
 function updateLabels(){
   clearLabels();
-  if(!document.getElementById('labels').checked || !model){ viewer.render(); return; }
+  if(!document.getElementById('labels') || !document.getElementById('labels').checked || !model){ viewer.render(); return; }
   const atoms = model.selectedAtoms({});
   atoms.forEach((a,i)=>{
     const serial = (a.serial ?? (Number.isFinite(a.index) ? a.index+1 : i+1));
-    labels.push(viewer.addLabel(String(serial), {
-      position:{x:a.x,y:a.y,z:a.z}, fontSize:12, backgroundOpacity:0, fontColor:'white'
-    }));
+    labels.push(viewer.addLabel(String(serial), { position:{x:a.x,y:a.y,z:a.z}, fontSize:12, backgroundOpacity:0, fontColor:'white' }));
   });
   viewer.render();
 }
@@ -175,13 +145,8 @@ function setStyles(){
   model.setStyle({}, {stick:{radius:trad}, sphere:{radius:srad}});
   viewer.render(); updateLabels();
 }
-
-/* ---------- load into viewer ---------- */
 function applyModelAndRender(newModel){
-  model = newModel;
-  setStyles();
-  viewer.zoomTo();
-  viewer.render();
+  model = newModel; setStyles(); viewer.zoomTo(); viewer.render();
   const n = model.selectedAtoms({}).length;
   document.getElementById('count').textContent = `${n} atoms`;
   updateLabels();
@@ -192,7 +157,7 @@ async function loadSDFIntoViewer(sdfText){
   applyModelAndRender(m);
 }
 
-/* ---------- client-side PubChem resolve ---------- */
+/* -------- resolution helpers -------- */
 async function pcJSON(url, abortMs=8000){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), abortMs);
@@ -204,31 +169,100 @@ async function pcJSON(url, abortMs=8000){
   if(fault) throw new Error(String(fault));
   return js;
 }
-async function resolveAnyBackend(query){
-  const url = `${BACKEND}/api/resolve_any?query=${encodeURIComponent(query)}`;
-  const r = await fetch(url, { method: 'GET' });
-  // If backend doesn’t support the method/route yet, quietly bail out
-  if (r.status === 404 || r.status === 405) {
-    throw Object.assign(new Error('skip-backend'), { _skip: true });
+async function resolveViaPubChem(query){
+  const q = query.trim();
+  const enc = encodeURIComponent(q);
+  const isInChIKey = /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/i.test(q);
+  const isCAS     = /^\d{2,7}-\d{2}-\d$/.test(q);
+
+  if(isInChIKey){
+    const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+    const p = js?.PropertyTable?.Properties?.[0]; if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+    throw new Error('No SMILES for that InChIKey');
   }
+  if(isCAS){
+    try{
+      const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const p = js?.PropertyTable?.Properties?.[0]; if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+    }catch(_){}
+    const cj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/cids/JSON`);
+    const cid = cj?.IdentifierList?.CID?.[0];
+    if(cid){
+      const pj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const p = pj?.PropertyTable?.Properties?.[0]; if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+    }
+    throw new Error('No SMILES for that CAS RN');
+  }
+  // Name
+  try{
+    const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+    const p = js?.PropertyTable?.Properties?.[0];
+    if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+  }catch(_){}
+  const cj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/cids/JSON`);
+  const cid = cj?.IdentifierList?.CID?.[0];
+  if(cid){
+    const pj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+    const p = pj?.PropertyTable?.Properties?.[0]; if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+  }
+  throw new Error('Could not resolve via PubChem');
+}
+async function resolveViaBackend(query){
+  const url = `${BACKEND}/api/resolve_any?query=${encodeURIComponent(query)}`;
+  const r = await fetch(url, { method:'GET' });
+  if(r.status===404 || r.status===405) throw Object.assign(new Error('skip-backend'), {_skip:true});
   const js = await r.json().catch(()=>({}));
   if(!r.ok || !js?.smiles) throw new Error(js?.error || `resolve_any HTTP ${r.status}`);
   return js.smiles;
 }
 
-
-async function buildSDF(smiles){
+/* -------- 3D build with fallbacks -------- */
+async function buildSDFBackend(smiles){
   const r = await fetch(`${BACKEND}/api/smiles2sdf`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ smiles })
   });
-  if(!r.ok){
-    const txt = await r.text().catch(()=> '');
-    throw new Error(`Backend 3D failed${txt ? ': '+txt : ''}`);
-  }
+  if(!r.ok){ throw new Error(`smiles2sdf HTTP ${r.status}`); }
+  return await r.text();
+}
+async function fetchSDFBySmilesPubChem(smiles){
+  const enc = encodeURIComponent(smiles);
+  const url = `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/${enc}/SDF?record_type=3d`;
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('No PubChem 3D SDF');
   return await r.text();
 }
 
+async function previewPipeline(smiles){
+  // 1) Backend 3D
+  try{
+    showStatus('Backend (RDKit) → generating 3D…');
+    const sdf = await buildSDFBackend(smiles);
+    await loadSDFIntoViewer(sdf);
+    showStatus('Loaded backend 3D.');
+    return;
+  }catch(e){
+    console.warn('Backend 3D failed:', e);
+    showStatus('Backend failed. Trying PubChem 3D…');
+  }
+  // 2) PubChem SDF
+  try{
+    const sdf = await fetchSDFBySmilesPubChem(smiles);
+    await loadSDFIntoViewer(sdf);
+    showStatus('Loaded PubChem 3D.');
+    return;
+  }catch(e){
+    console.warn('PubChem 3D failed:', e);
+    showStatus('3D SDF not found; rendering SMILES directly…');
+  }
+  // 3) Direct SMILES
+  viewer.removeAllModels?.(); clearLabels();
+  const m = viewer.addModel(smiles, 'smiles');
+  applyModelAndRender(m);
+  showStatus('Rendered SMILES.');
+}
+
+/* -------- GJF -------- */
 async function buildGJFUsingUI(smiles){
   const chk = (document.getElementById('chkname').value || '').trim();
   const headerRaw = (document.getElementById('header').value || '# opt freq B3LYP/6-31G(d) geom=connectivity').trim();
@@ -242,43 +276,43 @@ async function buildGJFUsingUI(smiles){
   });
   if(!r.ok){
     const txt = await r.text().catch(()=> '');
-    throw new Error(`Backend /api/gjf failed${txt ? ': '+txt : ''}`);
+    throw new Error(`/api/gjf ${r.status}${txt ? ': '+txt : ''}`);
   }
   const gjf = await r.text();
   document.getElementById('gjf').textContent = gjf;
   showStatus('GJF ready (preview updated).');
 }
 
-/* ---------- events ---------- */
+/* -------- UI hooks -------- */
 function hookUI(){
   document.getElementById('btnPreview').addEventListener('click', async ()=>{
     const query = document.getElementById('query').value.trim();
     if(!query){ showStatus('Enter a SMILES or a name.'); return; }
 
     try{
-      showStatus('Resolving → SMILES (client)…');
       let smiles;
+      // Try backend first (it already canonicalizes SMILES)
+      showStatus('Resolving → SMILES (backend)…');
       try{
-        smiles = await resolveClientFirst(query);
-      }catch(clientErr){
-        showStatus('Client resolve failed; trying backend…');
-        try {
-          smiles = await resolveAnyBackend(query);
-        } catch (beErr) {
-          if (beErr && beErr._skip) {
-            // backend route not ready; treat as failure of backend path only
-            throw clientErr; // report original client error
-          }
-          throw beErr; // real backend error (e.g., 502)
+        smiles = await resolveViaBackend(query);
+      }catch(be){
+        if(be && be._skip){ /* fallthrough */ }
+        else console.warn('Backend resolve error:', be);
+        if(!smiles){
+          showStatus('Backend resolve failed; trying PubChem…');
+          smiles = await resolveViaPubChem(query);
         }
       }
+
+      // Put resolved SMILES back into the box so Export works
+      document.getElementById('query').value = smiles;
       lastSMILES = smiles;
-      // ... continue to build 3D as before
-    } catch(e){
+
+      await previewPipeline(smiles);
+    }catch(e){
       console.warn(e);
       showStatus('Error: ' + (e?.message || e));
-  }
-
+    }
   });
 
   document.getElementById('btnBuild').addEventListener('click', async ()=>{
@@ -288,7 +322,7 @@ function hookUI(){
       await buildGJFUsingUI(lastSMILES);
     }catch(e){
       console.warn(e);
-      showStatus('Backend unavailable or build failed.');
+      showStatus('GJF build failed: ' + (e?.message || e));
     }
   });
 
@@ -312,21 +346,21 @@ function hookUI(){
     lastSMILES = "";
   });
 
-  document.getElementById('srad').addEventListener('input', setStyles);
-  document.getElementById('trad').addEventListener('input', setStyles);
-  document.getElementById('labels').addEventListener('change', updateLabels);
+  // Optional sliders/labels (add the controls if you want them visible)
+  const srad = document.createElement('input'); srad.type='range'; srad.id='srad'; srad.min='0.1'; srad.max='0.7'; srad.step='0.01'; srad.value='0.35'; srad.style.display='none';
+  const trad = document.createElement('input'); trad.type='range'; trad.id='trad'; trad.min='0.05'; trad.max='0.3'; trad.step='0.01'; trad.value='0.12'; trad.style.display='none';
+  const labels = document.createElement('input'); labels.type='checkbox'; labels.id='labels'; labels.checked=true; labels.style.display='none';
+  document.body.appendChild(srad); document.body.appendChild(trad); document.body.appendChild(labels);
+  srad.addEventListener('input', setStyles);
+  trad.addEventListener('input', setStyles);
+  labels.addEventListener('change', updateLabels);
 
   document.getElementById('query').addEventListener('keydown', (e)=>{
     if(e.key==='Enter') document.getElementById('btnPreview').click();
   });
 }
 
-/* ---------- boot ---------- */
-window.addEventListener('DOMContentLoaded', ()=>{
-  initViewer();
-  hookUI();
-  document.getElementById('header').value = '# opt freq B3LYP/6-31G(d) geom=connectivity';
-});
+window.addEventListener('DOMContentLoaded', ()=>{ initViewer(); hookUI(); document.getElementById('header')?.value !== undefined && (document.getElementById('header').value = '# opt freq B3LYP/6-31G(d) geom=connectivity'); });
 </script>
 </body>
 </html>
