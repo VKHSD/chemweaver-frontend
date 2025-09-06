@@ -68,7 +68,7 @@
             <button class="btn" id="btnPreview">Preview 3D</button>
             <button class="btn" id="btnClear">Clear</button>
           </div>
-          <div class="help">Backend resolves → SMILES (GET, no CORS preflight), then RDKit builds 3D.</div>
+          <div class="help">Client resolves via PubChem first (CORS ok), then falls back to backend. Backend builds 3D/Gaussian.</div>
         </div>
       </details>
 
@@ -192,22 +192,104 @@ async function loadSDFIntoViewer(sdfText){
   applyModelAndRender(m);
 }
 
+/* ---------- client-side PubChem resolve ---------- */
+async function pcJSON(url, abortMs=8000){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), abortMs);
+  const r = await fetch(url, { headers:{'Accept':'application/json'}, signal: ctrl.signal });
+  clearTimeout(t);
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  const js = await r.json();
+  const fault = js?.Fault?.Details?.[0] || js?.Fault?.Message;
+  if(fault) throw new Error(String(fault));
+  return js;
+}
+async function resolveClientFirst(query){
+  const q = query.trim();
+  if(!q) throw new Error('empty');
+  const enc = encodeURIComponent(q);
+  const isInChIKey = /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/i.test(q);
+  const isCAS     = /^\d{2,7}-\d{2}-\d$/.test(q);
+
+  // If it's already SMILES, accept it
+  // We can’t validate offline here; let backend validate when building
+  if(!isInChIKey && !isCAS && /[=#()\[\]@+\-\dA-Za-z\\\/]/.test(q) && q.includes('=') || q.includes('#') || q.match(/[a-z][a-z]/i)){
+    // heuristic allow-through if looks like SMILES; still try PubChem if name
+  }
+
+  try{
+    if(isInChIKey){
+      const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const p = js?.PropertyTable?.Properties?.[0];
+      if(p?.IsomericSMILES) return p.IsomericSMILES;
+      if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+      throw new Error('No SMILES for that InChIKey');
+    }
+
+    if(isCAS){
+      try{
+        const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+        const p = js?.PropertyTable?.Properties?.[0];
+        if(p?.IsomericSMILES) return p.IsomericSMILES;
+        if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+      }catch(_){}
+      const cj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/cids/JSON`);
+      const cid = cj?.IdentifierList?.CID?.[0];
+      if(cid){
+        const pj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+        const p = pj?.PropertyTable?.Properties?.[0];
+        if(p?.IsomericSMILES) return p.IsomericSMILES;
+        if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+      }
+      throw new Error('No SMILES for that CAS RN');
+    }
+
+    // Name
+    try{
+      const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const p = js?.PropertyTable?.Properties?.[0];
+      if(p?.IsomericSMILES) return p.IsomericSMILES;
+      if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+    }catch(_){}
+
+    const cj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/cids/JSON`);
+    const cid = cj?.IdentifierList?.CID?.[0];
+    if(cid){
+      const pj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const p = pj?.PropertyTable?.Properties?.[0];
+      if(p?.IsomericSMILES) return p.IsomericSMILES;
+      if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+    }
+
+    throw new Error('Could not resolve via PubChem');
+  }catch(e){
+    // If it *looks* like SMILES, just pass it through to backend
+    if(/^[A-Za-z0-9@\+\-\[\]\(\)=#\\\/.%]+$/.test(q) && /[A-Za-z]/.test(q)) return q;
+    throw e;
+  }
+}
+
 /* ---------- backend calls ---------- */
-async function resolveAnyGET(query){
+async function resolveAnyBackendGET(query){
   const url = `${BACKEND}/api/resolve_any?query=${encodeURIComponent(query)}`;
-  const r = await fetch(url, { method: 'GET' }); // simple GET: no preflight
+  const r = await fetch(url, { method: 'GET' });
   const js = await r.json().catch(()=>({}));
   if(!r.ok || !js?.smiles) throw new Error(js?.error || `resolve_any HTTP ${r.status}`);
   return js.smiles;
 }
+
 async function buildSDF(smiles){
   const r = await fetch(`${BACKEND}/api/smiles2sdf`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ smiles })
   });
-  if(!r.ok) throw new Error('Backend 3D failed');
+  if(!r.ok){
+    const txt = await r.text().catch(()=> '');
+    throw new Error(`Backend 3D failed${txt ? ': '+txt : ''}`);
+  }
   return await r.text();
 }
+
 async function buildGJFUsingUI(smiles){
   const chk = (document.getElementById('chkname').value || '').trim();
   const headerRaw = (document.getElementById('header').value || '# opt freq B3LYP/6-31G(d) geom=connectivity').trim();
@@ -219,7 +301,10 @@ async function buildGJFUsingUI(smiles){
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ smiles, header, title, include_connectivity: includeConn })
   });
-  if(!r.ok) throw new Error('Backend /api/gjf failed');
+  if(!r.ok){
+    const txt = await r.text().catch(()=> '');
+    throw new Error(`Backend /api/gjf failed${txt ? ': '+txt : ''}`);
+  }
   const gjf = await r.text();
   document.getElementById('gjf').textContent = gjf;
   showStatus('GJF ready (preview updated).');
@@ -232,9 +317,16 @@ function hookUI(){
     if(!query){ showStatus('Enter a SMILES or a name.'); return; }
 
     try{
-      showStatus('Resolving → SMILES…');
-      const smiles = await resolveAnyGET(query);
+      showStatus('Resolving → SMILES (client)…');
+      let smiles;
+      try{
+        smiles = await resolveClientFirst(query);
+      }catch(_){
+        showStatus('Client resolve failed; trying backend…');
+        smiles = await resolveAnyBackendGET(query);
+      }
       lastSMILES = smiles;
+
       showStatus('Building 3D…');
       const sdf = await buildSDF(smiles);
       await loadSDFIntoViewer(sdf);
