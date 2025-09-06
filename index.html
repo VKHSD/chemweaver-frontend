@@ -208,34 +208,72 @@ async function fetchSDFByName(q){
   return await r.text();
 }
 
-/* ---------- Robust: name/CAS/InChIKey → SMILES ---------- */
-/* ---------- Robust: name/CAS/InChIKey → SMILES (PubChem PUG REST) ---------- */
+/* ---------- Robust: name/CAS/InChIKey → SMILES (prefer backend; fallback to client PubChem) ---------- */
 async function resolveNameToSmiles(q){
   const query = q.trim();
   if(!query) throw new Error('empty');
 
+  // 0) Try backend first (avoids CORS / null-origin issues)
+  try{
+    const r = await fetch(`${BACKEND}/api/resolve_name`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ query })
+    });
+    if(r.ok){
+      const js = await r.json();
+      if(js?.smiles) return js.smiles;
+      // fall through to client-side if backend returned 4xx with error
+    } else {
+      // allow fallback
+      console.warn('backend resolve_name failed:', r.status);
+    }
+  }catch(err){
+    console.warn('backend resolve_name error:', err);
+    // allow fallback
+  }
+
+  // 1) If backend unavailable or blocked, use client-side PubChem (your original logic)
   const isInChIKey = /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/i.test(query);
   const isCAS     = /^\d{2,7}-\d{2}-\d$/.test(query);
   const enc       = encodeURIComponent(query);
 
-  // 1) InChIKey → property
-  if(isInChIKey){
-    const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-    const p = js?.PropertyTable?.Properties?.[0];
-    if(p?.IsomericSMILES) return p.IsomericSMILES;
-    if(p?.CanonicalSMILES) return p.CanonicalSMILES;
-    throw new Error('No SMILES for that InChIKey');
-  }
+  try{
+    if(isInChIKey){
+      const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const p = js?.PropertyTable?.Properties?.[0];
+      if(p?.IsomericSMILES) return p.IsomericSMILES;
+      if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+      throw new Error('No SMILES for that InChIKey');
+    }
 
-  // 2) CAS RN → property (direct), else CAS → CID → property
-  if(isCAS){
+    if(isCAS){
+      try{
+        const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+        const p = js?.PropertyTable?.Properties?.[0];
+        if(p?.IsomericSMILES) return p.IsomericSMILES;
+        if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+      }catch(_){}
+      const cj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/cids/JSON`);
+      const cid = cj?.IdentifierList?.CID?.[0];
+      if(cid){
+        const pj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+        const p = pj?.PropertyTable?.Properties?.[0];
+        if(p?.IsomericSMILES) return p.IsomericSMILES;
+        if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+      }
+      throw new Error('No SMILES for that CAS RN');
+    }
+
+    // name
     try{
-      const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
       const p = js?.PropertyTable?.Properties?.[0];
       if(p?.IsomericSMILES) return p.IsomericSMILES;
       if(p?.CanonicalSMILES) return p.CanonicalSMILES;
     }catch(_){}
-    const cj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/cids/JSON`);
+
+    const cj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/cids/JSON`);
     const cid = cj?.IdentifierList?.CID?.[0];
     if(cid){
       const pj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
@@ -243,28 +281,14 @@ async function resolveNameToSmiles(q){
       if(p?.IsomericSMILES) return p.IsomericSMILES;
       if(p?.CanonicalSMILES) return p.CanonicalSMILES;
     }
-    throw new Error('No SMILES for that CAS RN');
+
+    throw new Error('Could not resolve SMILES from that name');
+  }catch(err){
+    // surface original message if useful
+    throw err;
   }
-
-  // 3) Name → property (direct), else Name → CID → property
-  try{
-    const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-    const p = js?.PropertyTable?.Properties?.[0];
-    if(p?.IsomericSMILES) return p.IsomericSMILES;
-    if(p?.CanonicalSMILES) return p.CanonicalSMILES;
-  }catch(_){}
-
-  const cj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/cids/JSON`);
-  const cid = cj?.IdentifierList?.CID?.[0];
-  if(cid){
-    const pj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-    const p = pj?.PropertyTable?.Properties?.[0];
-    if(p?.IsomericSMILES) return p.IsomericSMILES;
-    if(p?.CanonicalSMILES) return p.CanonicalSMILES;
-  }
-
-  throw new Error('Could not resolve SMILES from that name');
 }
+
 
 /* ---------- load into viewer ---------- */
 function applyModelAndRender(newModel){
