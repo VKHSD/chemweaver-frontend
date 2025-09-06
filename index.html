@@ -135,9 +135,10 @@
 
 <script>
 /* ---------- config ---------- */
-const BACKEND = location.origin.includes('localhost') || location.origin.includes('127.0.0.1')
+const BACKEND = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
   ? 'http://127.0.0.1:5000'
-  : 'https://chemweaver-backend.onrender.com';
+  : 'https://chemweaver-backend-1.onrender.com';
+
 
 /* ---------- 3D viewer ---------- */
 let viewer, model, labels=[];
