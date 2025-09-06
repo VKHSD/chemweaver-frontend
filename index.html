@@ -331,7 +331,7 @@ function hookUI(){
   document.getElementById('btnDownload').addEventListener('click', ()=>{
     const txt = document.getElementById('gjf').textContent || '';
     if(!txt.trim()){ showStatus('Build the GJF first.'); return; }
-    const m = txt.match(/^\%chk\=(.+?))\.chk/m);
+    const m = txt.match(/^%chk=([^\r\n]+?)\.chk/m);
     const name = m ? m[1] : 'molecule';
     download(txt, name + '.gjf');
   });
