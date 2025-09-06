@@ -39,7 +39,6 @@
     pre#gjf{white-space:pre; background:#0e111a; border:1px solid var(--border); border-radius:8px; padding:10px;
             font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; min-height:220px; overflow:auto}
     .status{position:absolute; left:10px; bottom:10px; background:rgba(20,24,35,.85); border:1px solid #2a3250; border-radius:10px; padding:8px 10px; font-size:12px; pointer-events:none}
-    a{color:var(--accent2); text-decoration:none} a:hover{text-decoration:underline}
   </style>
 </head>
 <body>
@@ -116,8 +115,7 @@ const BACKEND = (location.hostname === 'localhost' || location.hostname === '127
 let viewer, model, labels=[], lastSMILES="";
 
 function initViewer(){
-  const el = document.getElementById('viewer');
-  viewer = $3Dmol.createViewer(el, { backgroundColor:'#0c0f16' });
+  viewer = $3Dmol.createViewer(document.getElementById('viewer'), { backgroundColor:'#0c0f16' });
   viewer.zoomTo(); viewer.render();
   window.addEventListener('resize', ()=>viewer.resize());
 }
@@ -134,7 +132,7 @@ function updateLabels(){
   const atoms = model.selectedAtoms({});
   atoms.forEach((a,i)=>{
     const serial = (a.serial ?? (Number.isFinite(a.index) ? a.index+1 : i+1));
-    labels.push(viewer.addLabel(String(serial), { position:{x:a.x,y:a.y,z:a.z}, fontSize:12, backgroundOpacity:0, fontColor:'white' }));
+    labels.push(viewer.addLabel(String(serial), { position:{x:a.x,y:a.y,z:a.z}, fontSize:12, backgroundOpacity:0 }));
   });
   viewer.render();
 }
@@ -157,13 +155,13 @@ async function loadSDFIntoViewer(sdfText){
   applyModelAndRender(m);
 }
 
-/* -------- resolution helpers -------- */
+/* ----- resolvers ----- */
 async function pcJSON(url, abortMs=8000){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), abortMs);
   const r = await fetch(url, { headers:{'Accept':'application/json'}, signal: ctrl.signal });
   clearTimeout(t);
-  if(!r.ok) throw new Error('HTTP '+r.status);
+  if(!r.ok) throw new Error('HTTP '+r.status+' @ '+url);
   const js = await r.json();
   const fault = js?.Fault?.Details?.[0] || js?.Fault?.Message;
   if(fault) throw new Error(String(fault));
@@ -177,19 +175,22 @@ async function resolveViaPubChem(query){
 
   if(isInChIKey){
     const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-    const p = js?.PropertyTable?.Properties?.[0]; if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+    const p = js?.PropertyTable?.Properties?.[0];
+    if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
     throw new Error('No SMILES for that InChIKey');
   }
   if(isCAS){
     try{
       const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-      const p = js?.PropertyTable?.Properties?.[0]; if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+      const p = js?.PropertyTable?.Properties?.[0];
+      if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
     }catch(_){}
     const cj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/cids/JSON`);
     const cid = cj?.IdentifierList?.CID?.[0];
     if(cid){
       const pj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-      const p = pj?.PropertyTable?.Properties?.[0]; if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+      const p = pj?.PropertyTable?.Properties?.[0];
+      if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
     }
     throw new Error('No SMILES for that CAS RN');
   }
@@ -198,14 +199,25 @@ async function resolveViaPubChem(query){
     const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
     const p = js?.PropertyTable?.Properties?.[0];
     if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
-  }catch(_){}
-  const cj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/cids/JSON`);
-  const cid = cj?.IdentifierList?.CID?.[0];
-  if(cid){
-    const pj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-    const p = pj?.PropertyTable?.Properties?.[0]; if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
-  }
+  }catch(e){ console.warn('PubChem name/property failed:', e); }
+  try{
+    const cj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/cids/JSON`);
+    const cid = cj?.IdentifierList?.CID?.[0];
+    if(cid){
+      const pj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const p = pj?.PropertyTable?.Properties?.[0];
+      if(p?.IsomericSMILES) return p.IsomericSMILES; if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+    }
+  }catch(e){ console.warn('PubChem name→CID failed:', e); }
   throw new Error('Could not resolve via PubChem');
+}
+async function resolveViaCactus(query){
+  const url = `https://cactus.nci.nih.gov/chemical/structure/${encodeURIComponent(query)}/smiles`;
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('CACTUS HTTP '+r.status);
+  const smi = (await r.text()).trim();
+  if(!smi) throw new Error('CACTUS returned empty');
+  return smi;
 }
 async function resolveViaBackend(query){
   const url = `${BACKEND}/api/resolve_any?query=${encodeURIComponent(query)}`;
@@ -216,13 +228,13 @@ async function resolveViaBackend(query){
   return js.smiles;
 }
 
-/* -------- 3D build with fallbacks -------- */
+/* ----- 3D build (with fallbacks) ----- */
 async function buildSDFBackend(smiles){
   const r = await fetch(`${BACKEND}/api/smiles2sdf`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ smiles })
   });
-  if(!r.ok){ throw new Error(`smiles2sdf HTTP ${r.status}`); }
+  if(!r.ok) throw new Error(`smiles2sdf HTTP ${r.status}`);
   return await r.text();
 }
 async function fetchSDFBySmilesPubChem(smiles){
@@ -232,9 +244,7 @@ async function fetchSDFBySmilesPubChem(smiles){
   if(!r.ok) throw new Error('No PubChem 3D SDF');
   return await r.text();
 }
-
 async function previewPipeline(smiles){
-  // 1) Backend 3D
   try{
     showStatus('Backend (RDKit) → generating 3D…');
     const sdf = await buildSDFBackend(smiles);
@@ -245,7 +255,6 @@ async function previewPipeline(smiles){
     console.warn('Backend 3D failed:', e);
     showStatus('Backend failed. Trying PubChem 3D…');
   }
-  // 2) PubChem SDF
   try{
     const sdf = await fetchSDFBySmilesPubChem(smiles);
     await loadSDFIntoViewer(sdf);
@@ -255,14 +264,13 @@ async function previewPipeline(smiles){
     console.warn('PubChem 3D failed:', e);
     showStatus('3D SDF not found; rendering SMILES directly…');
   }
-  // 3) Direct SMILES
   viewer.removeAllModels?.(); clearLabels();
   const m = viewer.addModel(smiles, 'smiles');
   applyModelAndRender(m);
   showStatus('Rendered SMILES.');
 }
 
-/* -------- GJF -------- */
+/* ----- GJF ----- */
 async function buildGJFUsingUI(smiles){
   const chk = (document.getElementById('chkname').value || '').trim();
   const headerRaw = (document.getElementById('header').value || '# opt freq B3LYP/6-31G(d) geom=connectivity').trim();
@@ -283,7 +291,7 @@ async function buildGJFUsingUI(smiles){
   showStatus('GJF ready (preview updated).');
 }
 
-/* -------- UI hooks -------- */
+/* ----- UI hooks ----- */
 function hookUI(){
   document.getElementById('btnPreview').addEventListener('click', async ()=>{
     const query = document.getElementById('query').value.trim();
@@ -291,27 +299,35 @@ function hookUI(){
 
     try{
       let smiles;
-      // Try backend first (it already canonicalizes SMILES)
+      // 1) Backend (does PubChem + CACTUS)
       showStatus('Resolving → SMILES (backend)…');
       try{
         smiles = await resolveViaBackend(query);
       }catch(be){
-        if(be && be._skip){ /* fallthrough */ }
-        else console.warn('Backend resolve error:', be);
-        if(!smiles){
-          showStatus('Backend resolve failed; trying PubChem…');
+        if(!(be && be._skip)) console.warn('Backend resolve error:', be);
+      }
+      // 2) Client PubChem
+      if(!smiles){
+        showStatus('Trying PubChem…');
+        try{
           smiles = await resolveViaPubChem(query);
+        }catch(pe){
+          console.warn('PubChem client failed:', pe);
         }
       }
+      // 3) Client CACTUS
+      if(!smiles){
+        showStatus('Trying CACTUS…');
+        smiles = await resolveViaCactus(query);
+      }
 
-      // Put resolved SMILES back into the box so Export works
+      // Push resolved SMILES back into the box, store it, preview
       document.getElementById('query').value = smiles;
       lastSMILES = smiles;
-
       await previewPipeline(smiles);
     }catch(e){
       console.warn(e);
-      showStatus('Error: ' + (e?.message || e));
+      showStatus('Error resolving name: ' + (e?.message || e));
     }
   });
 
@@ -346,7 +362,7 @@ function hookUI(){
     lastSMILES = "";
   });
 
-  // Optional sliders/labels (add the controls if you want them visible)
+  // hidden style toggles to keep previous behavior
   const srad = document.createElement('input'); srad.type='range'; srad.id='srad'; srad.min='0.1'; srad.max='0.7'; srad.step='0.01'; srad.value='0.35'; srad.style.display='none';
   const trad = document.createElement('input'); trad.type='range'; trad.id='trad'; trad.min='0.05'; trad.max='0.3'; trad.step='0.01'; trad.value='0.12'; trad.style.display='none';
   const labels = document.createElement('input'); labels.type='checkbox'; labels.id='labels'; labels.checked=true; labels.style.display='none';
@@ -360,7 +376,12 @@ function hookUI(){
   });
 }
 
-window.addEventListener('DOMContentLoaded', ()=>{ initViewer(); hookUI(); document.getElementById('header')?.value !== undefined && (document.getElementById('header').value = '# opt freq B3LYP/6-31G(d) geom=connectivity'); });
+window.addEventListener('DOMContentLoaded', ()=>{
+  initViewer();
+  hookUI();
+  // If you add the visible header textarea back, set a default:
+  const hdr = document.getElementById('header'); if(hdr) hdr.value = '# opt freq B3LYP/6-31G(d) geom=connectivity';
+});
 </script>
 </body>
 </html>
