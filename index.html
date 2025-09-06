@@ -204,79 +204,18 @@ async function pcJSON(url, abortMs=8000){
   if(fault) throw new Error(String(fault));
   return js;
 }
-async function resolveClientFirst(query){
-  const q = query.trim();
-  if(!q) throw new Error('empty');
-  const enc = encodeURIComponent(q);
-  const isInChIKey = /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/i.test(q);
-  const isCAS     = /^\d{2,7}-\d{2}-\d$/.test(q);
-
-  // If it's already SMILES, accept it
-  // We can’t validate offline here; let backend validate when building
-  if(!isInChIKey && !isCAS && /[=#()\[\]@+\-\dA-Za-z\\\/]/.test(q) && q.includes('=') || q.includes('#') || q.match(/[a-z][a-z]/i)){
-    // heuristic allow-through if looks like SMILES; still try PubChem if name
-  }
-
-  try{
-    if(isInChIKey){
-      const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-      const p = js?.PropertyTable?.Properties?.[0];
-      if(p?.IsomericSMILES) return p.IsomericSMILES;
-      if(p?.CanonicalSMILES) return p.CanonicalSMILES;
-      throw new Error('No SMILES for that InChIKey');
-    }
-
-    if(isCAS){
-      try{
-        const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-        const p = js?.PropertyTable?.Properties?.[0];
-        if(p?.IsomericSMILES) return p.IsomericSMILES;
-        if(p?.CanonicalSMILES) return p.CanonicalSMILES;
-      }catch(_){}
-      const cj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/cids/JSON`);
-      const cid = cj?.IdentifierList?.CID?.[0];
-      if(cid){
-        const pj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-        const p = pj?.PropertyTable?.Properties?.[0];
-        if(p?.IsomericSMILES) return p.IsomericSMILES;
-        if(p?.CanonicalSMILES) return p.CanonicalSMILES;
-      }
-      throw new Error('No SMILES for that CAS RN');
-    }
-
-    // Name
-    try{
-      const js = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-      const p = js?.PropertyTable?.Properties?.[0];
-      if(p?.IsomericSMILES) return p.IsomericSMILES;
-      if(p?.CanonicalSMILES) return p.CanonicalSMILES;
-    }catch(_){}
-
-    const cj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/cids/JSON`);
-    const cid = cj?.IdentifierList?.CID?.[0];
-    if(cid){
-      const pj = await pcJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-      const p = pj?.PropertyTable?.Properties?.[0];
-      if(p?.IsomericSMILES) return p.IsomericSMILES;
-      if(p?.CanonicalSMILES) return p.CanonicalSMILES;
-    }
-
-    throw new Error('Could not resolve via PubChem');
-  }catch(e){
-    // If it *looks* like SMILES, just pass it through to backend
-    if(/^[A-Za-z0-9@\+\-\[\]\(\)=#\\\/.%]+$/.test(q) && /[A-Za-z]/.test(q)) return q;
-    throw e;
-  }
-}
-
-/* ---------- backend calls ---------- */
-async function resolveAnyBackendGET(query){
+async function resolveAnyBackend(query){
   const url = `${BACKEND}/api/resolve_any?query=${encodeURIComponent(query)}`;
   const r = await fetch(url, { method: 'GET' });
+  // If backend doesn’t support the method/route yet, quietly bail out
+  if (r.status === 404 || r.status === 405) {
+    throw Object.assign(new Error('skip-backend'), { _skip: true });
+  }
   const js = await r.json().catch(()=>({}));
   if(!r.ok || !js?.smiles) throw new Error(js?.error || `resolve_any HTTP ${r.status}`);
   return js.smiles;
 }
+
 
 async function buildSDF(smiles){
   const r = await fetch(`${BACKEND}/api/smiles2sdf`, {
@@ -321,20 +260,25 @@ function hookUI(){
       let smiles;
       try{
         smiles = await resolveClientFirst(query);
-      }catch(_){
+      }catch(clientErr){
         showStatus('Client resolve failed; trying backend…');
-        smiles = await resolveAnyBackendGET(query);
+        try {
+          smiles = await resolveAnyBackend(query);
+        } catch (beErr) {
+          if (beErr && beErr._skip) {
+            // backend route not ready; treat as failure of backend path only
+            throw clientErr; // report original client error
+          }
+          throw beErr; // real backend error (e.g., 502)
+        }
       }
       lastSMILES = smiles;
-
-      showStatus('Building 3D…');
-      const sdf = await buildSDF(smiles);
-      await loadSDFIntoViewer(sdf);
-      showStatus('Loaded 3D.');
-    }catch(e){
+      // ... continue to build 3D as before
+    } catch(e){
       console.warn(e);
       showStatus('Error: ' + (e?.message || e));
-    }
+  }
+
   });
 
   document.getElementById('btnBuild').addEventListener('click', async ()=>{
