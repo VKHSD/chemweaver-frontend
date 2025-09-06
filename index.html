@@ -36,7 +36,7 @@
          padding:8px 10px; border-radius:10px; font-size:13px; cursor:pointer}
     .btn:hover{border-color:#2b3653; transform:translateY(-1px)}
     .pill{display:inline-block; padding:2px 8px; border-radius:999px; background:var(--chip); border:1px solid var(--chip-br); color:#cfe0ff; font-size:12px}
-    input,textarea{background:#0e111a; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:8px}
+    input,textarea{background:#0e111a; color:#e6e6e6; border:1px solid var(--border); border-radius:8px; padding:8px}
     label{font-size:13px; color:var(--muted)}
     .help{font-size:12px; color:var(--muted)}
     details.card{border:1px solid var(--border); border-radius:10px; background:#101522}
@@ -147,7 +147,7 @@ function initViewer(){
   viewer.zoomTo(); viewer.render();
   window.addEventListener('resize', ()=>viewer.resize());
 }
-function showStatus(msg, ms=2500){
+function showStatus(msg, ms=3500){
   const s=document.getElementById('status');
   s.innerHTML=msg; s.hidden=false;
   clearTimeout(showStatus._t); showStatus._t=setTimeout(()=>s.hidden=true, ms);
@@ -178,6 +178,20 @@ function setStyles(){
   viewer.render(); updateLabels();
 }
 
+/* ---------- tiny fetch helper w/ timeout & JSON fault check ---------- */
+async function getJSON(url, abortMs=8000){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), abortMs);
+  const r = await fetch(url, { headers:{'Accept':'application/json'}, signal: ctrl.signal });
+  clearTimeout(t);
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  const js = await r.json();
+  // PubChem sometimes returns 200 with a Fault payload
+  const fault = js?.Fault?.Details?.[0] || js?.Fault?.Message;
+  if(fault) throw new Error(String(fault));
+  return js;
+}
+
 /* ---------- PubChem helpers ---------- */
 async function fetchSDFBySmiles(smiles){
   const enc = encodeURIComponent(smiles);
@@ -194,59 +208,58 @@ async function fetchSDFByName(q){
   return await r.text();
 }
 
-/* Robust: name/CAS/InChIKey → SMILES */
+/* ---------- Robust: name/CAS/InChIKey → SMILES ---------- */
 async function resolveNameToSmiles(q){
   const query = q.trim();
+  if(!query) throw new Error('empty');
+
   const isInChIKey = /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/i.test(query);
   const isCAS     = /^\d{2,7}-\d{2}-\d$/.test(query);
+  const enc       = encodeURIComponent(query);
 
-  async function getJSON(url){
-    const r = await fetch(url);
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    return r.json();
-  }
-
-  // InChIKey → SMILES
+  // 1) InChIKey
   if(isInChIKey){
-    const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/${encodeURIComponent(query)}/property/CanonicalSMILES/JSON`);
-    const smi = js?.PropertyTable?.Properties?.[0]?.CanonicalSMILES;
-    if(smi) return smi;
+    const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+    const p = js?.PropertyTable?.Properties?.[0];
+    if(p?.IsomericSMILES) return p.IsomericSMILES;
+    if(p?.CanonicalSMILES) return p.CanonicalSMILES;
     throw new Error('No SMILES for that InChIKey');
   }
 
-  // CAS RN → SMILES (xref)
+  // 2) CAS RN direct
   if(isCAS){
     try{
-      const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${encodeURIComponent(query)}/property/CanonicalSMILES/JSON`);
-      const smi = js?.PropertyTable?.Properties?.[0]?.CanonicalSMILES;
-      if(smi) return smi;
+      const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const p = js?.PropertyTable?.Properties?.[0];
+      if(p?.IsomericSMILES) return p.IsomericSMILES;
+      if(p?.CanonicalSMILES) return p.CanonicalSMILES;
     }catch(_){}
-    // fallback: CAS → CID → SMILES
-    const cidJs = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${encodeURIComponent(query)}/cids/JSON`);
-    const cid = cidJs?.IdentifierList?.CID?.[0];
+    // CAS → CID → property
+    const cj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${enc}/cids/JSON`);
+    const cid = cj?.IdentifierList?.CID?.[0];
     if(cid){
-      const byCid = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-      const p = byCid?.PropertyTable?.Properties?.[0];
+      const pj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const p = pj?.PropertyTable?.Properties?.[0];
       if(p?.IsomericSMILES) return p.IsomericSMILES;
       if(p?.CanonicalSMILES) return p.CanonicalSMILES;
     }
     throw new Error('No SMILES for that CAS RN');
   }
 
-  // Name → SMILES (try both Isomeric & Canonical)
+  // 3) Name → property (direct)
   try{
-    const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(query)}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+    const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
     const p = js?.PropertyTable?.Properties?.[0];
     if(p?.IsomericSMILES) return p.IsomericSMILES;
     if(p?.CanonicalSMILES) return p.CanonicalSMILES;
   }catch(_){}
 
-  // Name → CID → SMILES
-  const cidJs = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(query)}/cids/JSON`);
-  const cid = cidJs?.IdentifierList?.CID?.[0];
+  // 4) Name → CID → property
+  const cj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/cids/JSON`);
+  const cid = cj?.IdentifierList?.CID?.[0];
   if(cid){
-    const byCid = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-    const p = byCid?.PropertyTable?.Properties?.[0];
+    const pj = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+    const p = pj?.PropertyTable?.Properties?.[0];
     if(p?.IsomericSMILES) return p.IsomericSMILES;
     if(p?.CanonicalSMILES) return p.CanonicalSMILES;
   }
@@ -277,7 +290,6 @@ async function loadSmilesIntoViewer(smiles){
 
 /* ---------- preview pipeline (backend → PubChem → direct) ---------- */
 async function previewFromSmiles(smiles){
-  // Backend (RDKit)
   try{
     showStatus('Backend (RDKit) → generating 3D…');
     const r = await fetch(`${BACKEND}/api/smiles2sdf`, {
@@ -289,22 +301,27 @@ async function previewFromSmiles(smiles){
     await loadSDFIntoViewer(sdf);
     showStatus('Loaded backend 3D.');
     return true;
-  }catch(_){ showStatus('Backend failed. Trying PubChem…'); }
+  }catch(e){
+    console.warn('backend sdf error:', e);
+    showStatus('Backend failed. Trying PubChem…');
+  }
 
-  // PubChem 3D SDF
   try{
     const sdf = await fetchSDFBySmiles(smiles);
     await loadSDFIntoViewer(sdf);
     showStatus('Loaded PubChem 3D.');
     return true;
-  }catch(_){ showStatus('3D SDF not found; rendering SMILES directly…'); }
+  }catch(e){
+    console.warn('pubchem sdf error:', e);
+    showStatus('3D SDF not found; rendering SMILES directly…');
+  }
 
-  // Direct SMILES (no guaranteed 3D)
   try{
     await loadSmilesIntoViewer(smiles);
     showStatus('Rendered SMILES.');
     return true;
-  }catch(_){
+  }catch(e){
+    console.warn('direct smiles error:', e);
     showStatus('Could not render SMILES.');
     return false;
   }
@@ -340,7 +357,6 @@ async function buildGJFUsingUI(smiles){
 
 /* ---------- events ---------- */
 function hookUI(){
-  // Preview: resolve name → SMILES if needed, then preview; if it came from name, auto-build GJF
   document.getElementById('btnPreview').addEventListener('click', async ()=>{
     let smiles = document.getElementById('smiles').value.trim();
     const query  = document.getElementById('search').value.trim();
@@ -355,7 +371,8 @@ function hookUI(){
         showStatus('Found SMILES. Generating 3D…');
         gotFromName = true;
       }catch(e){
-        showStatus('Could not resolve SMILES from that name.');
+        console.warn('resolve error:', e);
+        showStatus('Could not resolve SMILES from that name: ' + (e?.message || 'unknown error'));
         return;
       }
     }
@@ -364,11 +381,10 @@ function hookUI(){
     if(!ok) return;
 
     if(gotFromName){
-      try{ await buildGJFUsingUI(smiles); }catch(_){}
+      try{ await buildGJFUsingUI(smiles); }catch(e){ console.warn('auto build error:', e); }
     }
   });
 
-  // Manual GJF build
   document.getElementById('btnBuild').addEventListener('click', async ()=>{
     const smiles = document.getElementById('smiles').value.trim();
     if(!smiles){ showStatus('Enter a SMILES first.'); return; }
@@ -376,11 +392,11 @@ function hookUI(){
       showStatus('Backend → building Gaussian…');
       await buildGJFUsingUI(smiles);
     }catch(e){
+      console.warn('build error:', e);
       showStatus('Backend unavailable.');
     }
   });
 
-  // Download (fixed regex)
   document.getElementById('btnDownload').addEventListener('click', ()=>{
     const txt = document.getElementById('gjf').textContent || '';
     if(!txt.trim()){ showStatus('Build the GJF first.'); return; }
@@ -389,19 +405,16 @@ function hookUI(){
     download(txt, name + '.gjf');
   });
 
-  // Clear
   document.getElementById('btnClear').addEventListener('click', ()=>{
     viewer.removeAllModels?.(); model=null; clearLabels(); viewer.render();
     document.getElementById('gjf').textContent='(none)';
     document.getElementById('count').textContent='No model';
   });
 
-  // Style
   document.getElementById('srad').addEventListener('input', setStyles);
   document.getElementById('trad').addEventListener('input', setStyles);
   document.getElementById('labels').addEventListener('change', updateLabels);
 
-  // Enter key → Preview
   document.getElementById('search').addEventListener('keydown', (e)=>{
     if(e.key==='Enter') document.getElementById('btnPreview').click();
   });
