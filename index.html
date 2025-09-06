@@ -139,7 +139,6 @@ const BACKEND = (location.hostname === 'localhost' || location.hostname === '127
   ? 'http://127.0.0.1:5000'
   : 'https://chemweaver-backend-1.onrender.com';
 
-
 /* ---------- 3D viewer ---------- */
 let viewer, model, labels=[];
 function initViewer(){
@@ -178,42 +177,8 @@ function setStyles(){
   model.setStyle({}, {stick:{radius:trad}, sphere:{radius:srad}});
   viewer.render(); updateLabels();
 }
-// ADD: one function that tries backend -> PubChem -> direct
-async function previewFromSmiles(smiles){
-  // Backend first (RDKit 3D)
-  try{
-    showStatus('Backend (RDKit) → generating 3D…');
-    const r = await fetch(`${BACKEND}/api/smiles2sdf`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({smiles})
-    });
-    if(!r.ok) throw new Error('Backend 3D failed');
-    const sdf = await r.text();
-    await loadSDFIntoViewer(sdf);
-    showStatus('Loaded backend 3D.');
-    return true;
-  }catch(_){ showStatus('Backend failed. Trying PubChem…'); }
 
-  // PubChem 3D
-  try{
-    const sdf = await fetchSDFBySmiles(smiles);
-    await loadSDFIntoViewer(sdf);
-    showStatus('Loaded PubChem 3D.');
-    return true;
-  }catch(_){ showStatus('3D SDF not found; rendering SMILES directly…'); }
-
-  // Direct SMILES
-  try{
-    await loadSmilesIntoViewer(smiles);
-    showStatus('Rendered SMILES.');
-    return true;
-  }catch(_){
-    showStatus('Could not render SMILES.');
-    return false;
-  }
-}
-
-/* ---------- PubChem fallback ---------- */
+/* ---------- PubChem helpers ---------- */
 async function fetchSDFBySmiles(smiles){
   const enc = encodeURIComponent(smiles);
   const url = `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/${enc}/SDF?record_type=3d`;
@@ -228,7 +193,6 @@ async function fetchSDFByName(q){
   if(!r.ok) throw new Error('No 3D SDF for that name');
   return await r.text();
 }
-// ADD: resolve a name/CAS/InChIKey -> Canonical SMILES via PubChem
 async function fetchSmilesByName(q){
   const enc = encodeURIComponent(q);
   const url = `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/property/CanonicalSMILES/JSON`;
@@ -261,7 +225,39 @@ async function loadSmilesIntoViewer(smiles){
   applyModelAndRender(m);
 }
 
-/* ---------- Gaussian preview/download ---------- */
+/* ---------- preview pipeline (backend → PubChem → direct) ---------- */
+async function previewFromSmiles(smiles){
+  try{
+    showStatus('Backend (RDKit) → generating 3D…');
+    const r = await fetch(`${BACKEND}/api/smiles2sdf`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({smiles})
+    });
+    if(!r.ok) throw new Error('Backend 3D failed');
+    const sdf = await r.text();
+    await loadSDFIntoViewer(sdf);
+    showStatus('Loaded backend 3D.');
+    return true;
+  }catch(_){ showStatus('Backend failed. Trying PubChem…'); }
+
+  try{
+    const sdf = await fetchSDFBySmiles(smiles);
+    await loadSDFIntoViewer(sdf);
+    showStatus('Loaded PubChem 3D.');
+    return true;
+  }catch(_){ showStatus('3D SDF not found; rendering SMILES directly…'); }
+
+  try{
+    await loadSmilesIntoViewer(smiles);
+    showStatus('Rendered SMILES.');
+    return true;
+  }catch(_){
+    showStatus('Could not render SMILES.');
+    return false;
+  }
+}
+
+/* ---------- GJF builder ---------- */
 function download(text, name){
   const blob = new Blob([text], {type:'text/plain'});
   const a = document.createElement('a');
@@ -272,7 +268,6 @@ function download(text, name){
   a.remove();
   URL.revokeObjectURL(a.href);
 }
-// ADD: build using current UI fields (header/title/checkbox)
 async function buildGJFUsingUI(smiles){
   const chk = (document.getElementById('chkname').value || '').trim();
   const headerRaw = (document.getElementById('header').value || '# opt freq B3LYP/6-31G(d) geom=connectivity').trim();
@@ -292,75 +287,80 @@ async function buildGJFUsingUI(smiles){
 
 /* ---------- events ---------- */
 function hookUI(){
-// REPLACE: Preview button logic
-document.getElementById('btnPreview').addEventListener('click', async ()=>{
-  let smiles = document.getElementById('smiles').value.trim();
-  const query  = document.getElementById('search').value.trim();
-  if(!smiles && !query){ showStatus('Enter a SMILES or a search term.'); return; }
+  // Preview: resolves name → SMILES if needed, then previews; also auto-build if it came from name
+  document.getElementById('btnPreview').addEventListener('click', async ()=>{
+    let smiles = document.getElementById('smiles').value.trim();
+    const query  = document.getElementById('search').value.trim();
+    if(!smiles && !query){ showStatus('Enter a SMILES or a search term.'); return; }
 
-  // If user typed a name/CAS/InChIKey and no SMILES, fetch SMILES first
-  let gotFromName = false;
-  if(!smiles && query){
-    try{
-      showStatus('Resolving name → SMILES via PubChem…');
-      smiles = await fetchSmilesByName(query);
-      document.getElementById('smiles').value = smiles;  // auto-fill SMILES box
-      showStatus('Found SMILES. Generating 3D…');
-      gotFromName = true;
-    }catch(e){
-      showStatus('Could not resolve SMILES from that name.');
-      return;
+    let gotFromName = false;
+    if(!smiles && query){
+      try{
+        showStatus('Resolving name → SMILES via PubChem…');
+        smiles = await fetchSmilesByName(query);
+        document.getElementById('smiles').value = smiles;
+        showStatus('Found SMILES. Generating 3D…');
+        gotFromName = true;
+      }catch(e){
+        showStatus('Could not resolve SMILES from that name.');
+        return;
+      }
     }
-  }
 
-  // Preview the molecule from SMILES (backend → PubChem → direct)
-  const ok = await previewFromSmiles(smiles);
-  if(!ok) return;
+    const ok = await previewFromSmiles(smiles);
+    if(!ok) return;
 
-  // If it came from a name search, automatically build GJF too
-  if(gotFromName){
-    try{ await buildGJFUsingUI(smiles); }catch(_){ /* ignore */ }
-  }
-});
+    if(gotFromName){
+      try{ await buildGJFUsingUI(smiles); }catch(_){ /* ignore */ }
+    }
+  });
 
+  // Manual GJF build
+  document.getElementById('btnBuild').addEventListener('click', async ()=>{
+    const smiles = document.getElementById('smiles').value.trim();
+    if(!smiles){ showStatus('Enter a SMILES first.'); return; }
+    try{
+      showStatus('Backend → building Gaussian…');
+      await buildGJFUsingUI(smiles);
+    }catch(e){
+      showStatus('Backend unavailable.');
+    }
+  });
 
-// OPTIONAL REPLACE: reuse helper for manual builds
-document.getElementById('btnBuild').addEventListener('click', async ()=>{
-  const smiles = document.getElementById('smiles').value.trim();
-  if(!smiles){ showStatus('Enter a SMILES first.'); return; }
-  try{
-    showStatus('Backend → building Gaussian…');
-    await buildGJFUsingUI(smiles);
-  }catch(e){
-    showStatus('Backend unavailable.');
-  }
-});
-
-
+  // Download
   document.getElementById('btnDownload').addEventListener('click', ()=>{
     const txt = document.getElementById('gjf').textContent || '';
     if(!txt.trim()){ showStatus('Build the GJF first.'); return; }
-    const m = txt.match(/^\%chk\=(.+?)\.chk/m);
+    const m = txt.match(/^\%chk\=(.+?))\.chk/m);
     const name = m ? m[1] : 'molecule';
     download(txt, name + '.gjf');
   });
 
+  // Clear
   document.getElementById('btnClear').addEventListener('click', ()=>{
     viewer.removeAllModels?.(); model=null; clearLabels(); viewer.render();
     document.getElementById('gjf').textContent='(none)';
     document.getElementById('count').textContent='No model';
   });
 
+  // Style
   document.getElementById('srad').addEventListener('input', setStyles);
   document.getElementById('trad').addEventListener('input', setStyles);
   document.getElementById('labels').addEventListener('change', updateLabels);
+
+  // Enter key in search field → trigger Preview
+  document.getElementById('search').addEventListener('keydown', (e)=>{
+    if(e.key==='Enter') document.getElementById('btnPreview').click();
+  });
+  document.getElementById('smiles').addEventListener('keydown', (e)=>{
+    if(e.key==='Enter') document.getElementById('btnPreview').click();
+  });
 }
 
 /* ---------- boot ---------- */
 window.addEventListener('DOMContentLoaded', ()=>{
   initViewer();
   hookUI();
-  // sensible defaults
   document.getElementById('header').value = '# opt freq B3LYP/6-31G(d) geom=connectivity';
 });
 </script>
