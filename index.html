@@ -193,73 +193,66 @@ async function fetchSDFByName(q){
   if(!r.ok) throw new Error('No 3D SDF for that name');
   return await r.text();
 }
-// Drop-in replacement for fetchSmilesByName
+
+/* Robust: name/CAS/InChIKey → SMILES */
 async function resolveNameToSmiles(q){
   const query = q.trim();
-
-  // Patterns for special IDs
   const isInChIKey = /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/i.test(query);
   const isCAS     = /^\d{2,7}-\d{2}-\d$/.test(query);
 
-  // Helper: GET JSON
   async function getJSON(url){
     const r = await fetch(url);
     if(!r.ok) throw new Error('HTTP '+r.status);
     return r.json();
   }
 
-  // 1) InChIKey → CanonicalSMILES
+  // InChIKey → SMILES
   if(isInChIKey){
-    const url = `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/${encodeURIComponent(query)}/property/CanonicalSMILES/JSON`;
-    const js = await getJSON(url);
+    const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/${encodeURIComponent(query)}/property/CanonicalSMILES/JSON`);
     const smi = js?.PropertyTable?.Properties?.[0]?.CanonicalSMILES;
     if(smi) return smi;
     throw new Error('No SMILES for that InChIKey');
   }
 
-  // 2) CAS RN → CanonicalSMILES via xref
+  // CAS RN → SMILES (xref)
   if(isCAS){
-    const url = `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${encodeURIComponent(query)}/property/CanonicalSMILES/JSON`;
-    const js = await getJSON(url);
-    const smi = js?.PropertyTable?.Properties?.[0]?.CanonicalSMILES;
-    if(smi) return smi;
-    // fallback via CID route
+    try{
+      const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${encodeURIComponent(query)}/property/CanonicalSMILES/JSON`);
+      const smi = js?.PropertyTable?.Properties?.[0]?.CanonicalSMILES;
+      if(smi) return smi;
+    }catch(_){}
+    // fallback: CAS → CID → SMILES
     const cidJs = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/xref/rn/${encodeURIComponent(query)}/cids/JSON`);
     const cid = cidJs?.IdentifierList?.CID?.[0];
     if(cid){
-      const byCid = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/CanonicalSMILES/JSON`);
-      const smi2 = byCid?.PropertyTable?.Properties?.[0]?.CanonicalSMILES;
-      if(smi2) return smi2;
+      const byCid = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+      const p = byCid?.PropertyTable?.Properties?.[0];
+      if(p?.IsomericSMILES) return p.IsomericSMILES;
+      if(p?.CanonicalSMILES) return p.CanonicalSMILES;
     }
     throw new Error('No SMILES for that CAS RN');
   }
 
-  // 3) Name → (Isomeric or Canonical) SMILES
-  const enc = encodeURIComponent(query);
-
-  // Try both properties in one call (some names resolve only with IsomericSMILES)
+  // Name → SMILES (try both Isomeric & Canonical)
   try{
-    const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-    const prop = js?.PropertyTable?.Properties?.[0];
-    if(prop?.IsomericSMILES) return prop.IsomericSMILES;
-    if(prop?.CanonicalSMILES) return prop.CanonicalSMILES;
-  }catch(_){ /* fall through */ }
+    const js = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(query)}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+    const p = js?.PropertyTable?.Properties?.[0];
+    if(p?.IsomericSMILES) return p.IsomericSMILES;
+    if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+  }catch(_){}
 
-  // 4) Name → CID → property
-  try{
-    const cidJs = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${enc}/cids/JSON`);
-    const cid = cidJs?.IdentifierList?.CID?.[0];
-    if(cid){
-      const byCid = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
-      const prop = byCid?.PropertyTable?.Properties?.[0];
-      if(prop?.IsomericSMILES) return prop.IsomericSMILES;
-      if(prop?.CanonicalSMILES) return prop.CanonicalSMILES;
-    }
-  }catch(_){ /* fall through */ }
+  // Name → CID → SMILES
+  const cidJs = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(query)}/cids/JSON`);
+  const cid = cidJs?.IdentifierList?.CID?.[0];
+  if(cid){
+    const byCid = await getJSON(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/IsomericSMILES,CanonicalSMILES/JSON`);
+    const p = byCid?.PropertyTable?.Properties?.[0];
+    if(p?.IsomericSMILES) return p.IsomericSMILES;
+    if(p?.CanonicalSMILES) return p.CanonicalSMILES;
+  }
 
   throw new Error('Could not resolve SMILES from that name');
 }
-
 
 /* ---------- load into viewer ---------- */
 function applyModelAndRender(newModel){
@@ -284,6 +277,7 @@ async function loadSmilesIntoViewer(smiles){
 
 /* ---------- preview pipeline (backend → PubChem → direct) ---------- */
 async function previewFromSmiles(smiles){
+  // Backend (RDKit)
   try{
     showStatus('Backend (RDKit) → generating 3D…');
     const r = await fetch(`${BACKEND}/api/smiles2sdf`, {
@@ -297,6 +291,7 @@ async function previewFromSmiles(smiles){
     return true;
   }catch(_){ showStatus('Backend failed. Trying PubChem…'); }
 
+  // PubChem 3D SDF
   try{
     const sdf = await fetchSDFBySmiles(smiles);
     await loadSDFIntoViewer(sdf);
@@ -304,6 +299,7 @@ async function previewFromSmiles(smiles){
     return true;
   }catch(_){ showStatus('3D SDF not found; rendering SMILES directly…'); }
 
+  // Direct SMILES (no guaranteed 3D)
   try{
     await loadSmilesIntoViewer(smiles);
     showStatus('Rendered SMILES.');
@@ -344,7 +340,7 @@ async function buildGJFUsingUI(smiles){
 
 /* ---------- events ---------- */
 function hookUI(){
-  // Preview: resolves name → SMILES if needed, then previews; also auto-build if it came from name
+  // Preview: resolve name → SMILES if needed, then preview; if it came from name, auto-build GJF
   document.getElementById('btnPreview').addEventListener('click', async ()=>{
     let smiles = document.getElementById('smiles').value.trim();
     const query  = document.getElementById('search').value.trim();
@@ -368,7 +364,7 @@ function hookUI(){
     if(!ok) return;
 
     if(gotFromName){
-      try{ await buildGJFUsingUI(smiles); }catch(_){ /* ignore */ }
+      try{ await buildGJFUsingUI(smiles); }catch(_){}
     }
   });
 
@@ -384,7 +380,7 @@ function hookUI(){
     }
   });
 
-  // Download
+  // Download (fixed regex)
   document.getElementById('btnDownload').addEventListener('click', ()=>{
     const txt = document.getElementById('gjf').textContent || '';
     if(!txt.trim()){ showStatus('Build the GJF first.'); return; }
@@ -405,7 +401,7 @@ function hookUI(){
   document.getElementById('trad').addEventListener('input', setStyles);
   document.getElementById('labels').addEventListener('change', updateLabels);
 
-  // Enter key in search field → trigger Preview
+  // Enter key → Preview
   document.getElementById('search').addEventListener('keydown', (e)=>{
     if(e.key==='Enter') document.getElementById('btnPreview').click();
   });
